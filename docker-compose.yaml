@@ -1,0 +1,118 @@
+---
+services:
+  controller:
+    privileged: true
+    image: longhornio/longhorn-engine:f288e3b0-dirty
+    command: [
+      "longhorn",
+      "controller",
+      "--frontend", "tgt-blockdev",
+      "--size", "10g",
+      "--current-size", "10g",
+      "--replica", "tcp://172.42.0.11:9502",
+      "--replica", "tcp://172.42.0.12:9502",
+      "--replica", "tcp://172.42.0.13:9502",
+      "--replica", "tcp://172.42.0.14:9502",
+      "--replica", "tcp://172.42.0.15:9502",
+      "--volume-mode", "erasure-coding",
+      "--ec-n", "3",
+      "--ec-k", "2",
+      "test-volume",
+    ]
+    networks:
+      - longhorn-net
+    volumes:
+      - type: bind
+        source: /proc
+        target: /host/proc
+      - type: bind
+        source: /dev
+        target: /host/dev
+    depends_on:
+      - replica-1
+      - replica-2
+      - replica-3
+      - replica-4
+      - replica-5
+
+  replica-1:
+    image: longhornio/longhorn-engine:f288e3b0-dirty
+    command: [
+      "longhorn",
+      "replica",
+      "--listen", "172.42.0.11:9502",
+      "--size", "10g",
+      "/volume",
+    ]
+    networks:
+      longhorn-net:
+        ipv4_address: 172.42.0.11
+    volumes:
+      - /tmp/lh-test/replica-1:/volume
+
+  replica-2:
+    image: longhornio/longhorn-engine:f288e3b0-dirty
+    command: [
+      "longhorn",
+      "replica",
+      "--listen", "172.42.0.12:9502",
+      "--size", "10g",
+      "/volume",
+    ]
+    networks:
+      longhorn-net:
+        ipv4_address: 172.42.0.12
+    volumes:
+      - /tmp/lh-test/replica-2:/volume
+
+  replica-3:
+    image: longhornio/longhorn-engine:f288e3b0-dirty
+    command: [
+      "longhorn",
+      "replica",
+      "--listen", "172.42.0.13:9502",
+      "--size", "10g",
+      "/volume",
+    ]
+    networks:
+      longhorn-net:
+        ipv4_address: 172.42.0.13
+    volumes:
+      - /tmp/lh-test/replica-3:/volume
+
+  replica-4:
+    image: longhornio/longhorn-engine:f288e3b0-dirty
+    command: [
+      "longhorn",
+      "replica",
+      "--listen", "172.42.0.14:9502",
+      "--size", "10g",
+      "/volume",
+    ]
+    networks:
+      longhorn-net:
+        ipv4_address: 172.42.0.14
+    volumes:
+      - /tmp/lh-test/replica-4:/volume
+
+  replica-5:
+    image: longhornio/longhorn-engine:f288e3b0-dirty
+    command: [
+      "longhorn",
+      "replica",
+      "--listen", "172.42.0.15:9502",
+      "--size", "10g",
+      "/volume",
+    ]
+    networks:
+      longhorn-net:
+        ipv4_address: 172.42.0.15
+    volumes:
+      - /tmp/lh-test/replica-5:/volume
+
+networks:
+  longhorn-net:
+    ipam:
+      driver: default
+      config:
+        - subnet: 172.42.0.0/16

@@ -77,13 +77,13 @@ func (c *Controller) VerifyRebuildReplica(address string) error {
 	}
 
 	if !c.revisionCounterDisabled {
-		counter, err := c.backend.GetRevisionCounter(rwReplica.Address)
+		counter, err := c.replicationBackend.GetRevisionCounter(rwReplica.Address)
 		if err != nil || counter == -1 {
 			return errors.Wrapf(err, "failed to get revision counter of RW Replica %v: counter %v",
 				rwReplica.Address, counter)
 
 		}
-		if err := c.backend.SetRevisionCounter(address, counter); err != nil {
+		if err := c.replicationBackend.SetRevisionCounter(address, counter); err != nil {
 			return errors.Wrapf(err, "failed to set revision counter for %v", address)
 		}
 	}
@@ -133,7 +133,7 @@ func (c *Controller) PrepareRebuildReplica(address string) ([]types.SyncFileInfo
 	defer c.Unlock()
 
 	if !c.revisionCounterDisabled {
-		if err := c.backend.SetRevisionCounter(address, 0); err != nil {
+		if err := c.replicationBackend.SetRevisionCounter(address, 0); err != nil {
 			return nil, errors.Wrapf(err, "failed to set revision counter for %v", address)
 		}
 	}

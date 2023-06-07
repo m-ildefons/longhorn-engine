@@ -21,6 +21,11 @@ import (
 	"github.com/longhorn/longhorn-engine/pkg/util"
 )
 
+const (
+	BackendModeReplication = iota
+	BackendModeErasureCoding
+)
+
 func ControllerCmd() cli.Command {
 	return cli.Command{
 		Name: "controller",
@@ -47,6 +52,21 @@ func ControllerCmd() cli.Command {
 			},
 			cli.StringSliceFlag{
 				Name: "replica",
+			},
+			cli.StringFlag{
+				Name:  "volume-mode",
+				Usage: "Mode switch replication/erasure-coding",
+				Value: "replication",
+			},
+			cli.Int64Flag{
+				Name:  "ec-n",
+				Usage: "n (number of slices) when volume-mode is erasure-coding",
+				Value: int64(5),
+			},
+			cli.Int64Flag{
+				Name:  "ec-k",
+				Usage: "k (number of parity blocks) when volume-mode is erasure-coding",
+				Value: int64(3),
 			},
 			cli.BoolFlag{
 				Name: "upgrade",
@@ -157,10 +177,33 @@ func startController(c *cli.Context) error {
 		frontend = f
 	}
 
+	vm := c.String("volume-mode")
+	var volumeMode types.VolumeMode
+	switch vm {
+	case "replication":
+		volumeMode = types.VolumeModeReplication
+	case "erasure-coding":
+		volumeMode = types.VolumeModeErasureCoding
+	default:
+		logrus.Fatalf("Unsupported volume-mode: %s", volumeMode)
+	}
+
+	n := c.Int64("ec-n")
+	k := c.Int64("ec-k")
+
 	logrus.Infof("Creating volume %v controller with iSCSI target request timeout %v and engine to replica(s) timeout %v",
 		name, iscsiTargetRequestTimeout, engineReplicaTimeout)
-	control := controller.NewController(name, dynamic.New(factories), frontend, isUpgrade, disableRevCounter, salvageRequested,
-		unmapMarkSnapChainRemoved, iscsiTargetRequestTimeout, engineReplicaTimeout, types.DataServerProtocol(dataServerProtocol),
+	control := controller.NewController(
+		name,
+		dynamic.New(factories),
+		frontend,
+		isUpgrade,
+		disableRevCounter,
+		salvageRequested,
+		unmapMarkSnapChainRemoved,
+		iscsiTargetRequestTimeout,
+		engineReplicaTimeout,
+		types.DataServerProtocol(dataServerProtocol),
 		fileSyncHTTPClientTimeout)
 
 	// need to wait for Shutdown() completion
@@ -172,17 +215,27 @@ func startController(c *cli.Context) error {
 	})
 
 	if len(replicas) > 0 {
-		logrus.Infof("Starting with replicas %q", replicas)
-		if err := control.Start(volumeSize, volumeCurrentSize, replicas...); err != nil {
-			exitCode := 1
-			// Most of the time, 1 is the exit code when there's an error.
-			// The exit code will be ENODATA (61) if there is no backend.
-			// The engine controller will then catch the ENODATA.
-			if strings.Contains(err.Error(), controller.ControllerErrorNoBackendReplicaError) {
-				exitCode = int(syscall.ENODATA)
+		if volumeMode == types.VolumeModeErasureCoding {
+			if len(replicas) < int(n+k) {
+				logrus.Fatalf("Too few replicas for %d + %d EC volume", n, k)
 			}
-			logrus.Error(err.Error())
-			os.Exit(exitCode)
+			if err := control.StartErasureCoding(int(n), int(k), volumeSize, volumeCurrentSize, replicas...); err != nil {
+				logrus.Error(err.Error())
+				os.Exit(1)
+			}
+		} else {
+			logrus.Infof("Starting with replicas %q", replicas)
+			if err := control.Start(volumeSize, volumeCurrentSize, replicas...); err != nil {
+				exitCode := 1
+				// Most of the time, 1 is the exit code when there's an error.
+				// The exit code will be ENODATA (61) if there is no backend.
+				// The engine controller will then catch the ENODATA.
+				if strings.Contains(err.Error(), controller.ControllerErrorNoBackendReplicaError) {
+					exitCode = int(syscall.ENODATA)
+				}
+				logrus.Error(err.Error())
+				os.Exit(exitCode)
+			}
 		}
 	}
 

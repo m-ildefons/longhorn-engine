@@ -64,6 +64,13 @@ const (
 	ReplicaStateError      = ReplicaState("error")
 )
 
+type VolumeMode string
+
+const (
+	VolumeModeReplication   = VolumeMode("replication")
+	VolumeModeErasureCoding = VolumeMode("erasure-coding")
+)
+
 type ReaderWriterUnmapperAt interface {
 	io.ReaderAt
 	io.WriterAt
@@ -172,4 +179,9 @@ type RWMetrics struct {
 
 func IsAlreadyPurgingError(err error) bool {
 	return strings.Contains(err.Error(), "already purging")
+}
+
+type Encoder interface {
+	io.ReaderAt
+	io.WriterAt
 }

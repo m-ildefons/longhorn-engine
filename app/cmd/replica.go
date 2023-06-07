@@ -28,7 +28,7 @@ import (
 func ReplicaCmd() cli.Command {
 	return cli.Command{
 		Name:      "replica",
-		UsageText: "longhorn controller DIRECTORY SIZE",
+		UsageText: "longhorn replica DIRECTORY SIZE",
 		Flags: []cli.Flag{
 			cli.StringFlag{
 				Name:  "listen",

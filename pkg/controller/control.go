@@ -28,7 +28,9 @@ type Controller struct {
 	sectorSize                int64
 	replicas                  []types.Replica
 	factory                   types.BackendFactory
-	backend                   *replicator
+	replicationBackend        *replicator
+	erasurecodingBackend      *erasurecoder
+	volumeMode                types.VolumeMode
 	frontend                  types.Frontend
 	isUpgrade                 bool
 	iscsiTargetRequestTimeout time.Duration
@@ -202,12 +204,12 @@ func (c *Controller) Snapshot(name string, labels map[string]string) (string, er
 		name = util.UUID()
 	}
 
-	if _, err := c.backend.RemainSnapshots(); err != nil {
+	if _, err := c.replicationBackend.RemainSnapshots(); err != nil {
 		return "", err
 	}
 
 	created := util.Now()
-	if err := c.handleErrorNoLock(c.backend.Snapshot(name, true, created, labels)); err != nil {
+	if err := c.handleErrorNoLock(c.replicationBackend.Snapshot(name, true, created, labels)); err != nil {
 		return "", err
 	}
 	log.Info("Finished snapshot")
@@ -248,12 +250,12 @@ func (c *Controller) Expand(size int64) error {
 		// Should block R/W during the expansion.
 		c.Lock()
 		defer c.Unlock()
-		if _, err := c.backend.RemainSnapshots(); err != nil {
+		if _, err := c.replicationBackend.RemainSnapshots(); err != nil {
 			logrus.WithError(err).Error("Cannot get remain snapshot count before expansion")
 			return
 		}
 
-		expansionSuccess, errsNeedToBeHandled, errsForRecording := c.backend.Expand(size)
+		expansionSuccess, errsNeedToBeHandled, errsForRecording := c.replicationBackend.Expand(size)
 		if errsForRecording != nil {
 			c.lastExpansionFailedAt = time.Now().UTC().Format(time.RFC3339Nano)
 			if expansionSuccess {
@@ -354,11 +356,11 @@ func (c *Controller) addReplicaNoLock(newBackend types.Backend, address string, 
 		uuid := util.UUID()
 		created := util.Now()
 
-		if _, err := c.backend.RemainSnapshots(); err != nil {
+		if _, err := c.replicationBackend.RemainSnapshots(); err != nil {
 			return err
 		}
 
-		if err := c.backend.Snapshot(uuid, false, created, nil); err != nil {
+		if err := c.replicationBackend.Snapshot(uuid, false, created, nil); err != nil {
 			return err
 		}
 		if err := newBackend.Snapshot(uuid, false, created, nil); err != nil {
@@ -371,7 +373,7 @@ func (c *Controller) addReplicaNoLock(newBackend types.Backend, address string, 
 		Mode:    mode,
 	})
 
-	c.backend.AddBackend(address, newBackend, mode)
+	c.replicationBackend.AddBackend(address, newBackend, mode)
 
 	if mode != types.ERR {
 		go c.monitoring(address, newBackend)
@@ -403,7 +405,7 @@ func (c *Controller) RemoveReplica(address string) error {
 				return fmt.Errorf("cannot remove last replica if volume is up")
 			}
 			c.replicas = append(c.replicas[:i], c.replicas[i+1:]...)
-			c.backend.RemoveBackend(r.Address)
+			c.replicationBackend.RemoveBackend(r.Address)
 		}
 	}
 
@@ -437,7 +439,7 @@ func (c *Controller) setReplicaModeNoLock(address string, mode types.Mode) {
 				logrus.Infof("Setting replica %v to mode %v", address, mode)
 				r.Mode = mode
 				c.replicas[i] = r
-				c.backend.SetMode(address, mode)
+				c.replicationBackend.SetMode(address, mode)
 			} else {
 				logrus.Infof("Ignore set replica %v to mode %v due to it's ERR", address, mode)
 			}
@@ -463,6 +465,8 @@ func (c *Controller) startFrontend() error {
 			logrus.WithError(err).Error("Failed to startup frontend")
 			return errors.Wrap(err, "failed to start up frontend")
 		}
+	} else {
+		logrus.Info("Too few replicas or a frontend is already initialized")
 	}
 	return nil
 }
@@ -499,7 +503,7 @@ func (c *Controller) checkReplicaRevCounterSettingMatch() error {
 		if r.Mode == types.ERR {
 			continue
 		}
-		revCounterDisabled, err := c.backend.backends[r.Address].backend.IsRevisionCounterDisabled()
+		revCounterDisabled, err := c.replicationBackend.backends[r.Address].backend.IsRevisionCounterDisabled()
 		if err != nil {
 			return err
 		}
@@ -523,12 +527,12 @@ func (c *Controller) salvageRevisionCounterDisabledReplicas() error {
 		if r.Mode == types.ERR {
 			continue
 		}
-		repLastModifyTime, err := c.backend.backends[r.Address].backend.GetLastModifyTime()
+		repLastModifyTime, err := c.replicationBackend.backends[r.Address].backend.GetLastModifyTime()
 		if err != nil {
 			return err
 		}
 
-		repHeadFileSize, err := c.backend.backends[r.Address].backend.GetLastModifyTime()
+		repHeadFileSize, err := c.replicationBackend.backends[r.Address].backend.GetLastModifyTime()
 		if err != nil {
 			return err
 		}
@@ -588,7 +592,7 @@ func (c *Controller) checkReplicasRevisionCounter() error {
 		if r.Mode == types.ERR {
 			continue
 		}
-		counter, err := c.backend.GetRevisionCounter(r.Address)
+		counter, err := c.replicationBackend.GetRevisionCounter(r.Address)
 		if err != nil {
 			return err
 		}
@@ -634,12 +638,12 @@ func (c *Controller) checkUnmapMarkSnapChainRemoved() error {
 		if r.Mode == types.ERR {
 			continue
 		}
-		enabled, err := c.backend.GetUnmapMarkSnapChainRemoved(r.Address)
+		enabled, err := c.replicationBackend.GetUnmapMarkSnapChainRemoved(r.Address)
 		if err != nil {
 			return err
 		}
 		if enabled != expected {
-			err := c.backend.SetUnmapMarkSnapChainRemoved(r.Address, expected)
+			err := c.replicationBackend.SetUnmapMarkSnapChainRemoved(r.Address, expected)
 			if err != nil {
 				logrus.Errorf("Failed to correct Unmatched flag UnmapMarkSnapChainRemoved! Expect %v, got %v in replica %v. Mark as ERR",
 					expected, enabled, r.Address)
@@ -703,6 +707,48 @@ func isBackendServiceUnavailable(errorCodes map[string]codes.Code) bool {
 		}
 	}
 	return false
+}
+
+func (c *Controller) StartErasureCoding(n, k int, volumeSize, volumeCurrentSize int64, addresses ...string) error {
+	var err error
+
+	c.Lock()
+	defer c.Unlock()
+
+	if len(addresses) != n+k {
+		return nil
+	}
+
+	if err := checkDuplicateAddress(addresses...); err != nil {
+		return err
+	}
+
+	backends := make([]types.Backend, 0)
+	for _, address := range addresses {
+		newBackend, err := c.factory.Create(c.Name, address, c.DataServerProtocol, c.engineReplicaTimeout)
+		if err != nil {
+		}
+		backends = append(backends, newBackend)
+	}
+
+	c.erasurecodingBackend, err = NewErasureCoder(n, k, uint64(volumeSize), backends)
+	if err != nil {
+		return err
+	}
+	c.volumeMode = types.VolumeModeErasureCoding
+
+	c.sectorSize = 512
+	c.size = volumeSize
+
+	for _, address := range addresses {
+		c.replicas = append(c.replicas, types.Replica{
+			Address: address,
+			Mode:    types.RW,
+		})
+	}
+
+	logrus.Infof("Starting controller in %d + %d EC mode", n, k)
+	return c.startFrontend()
 }
 
 func (c *Controller) Start(volumeSize, volumeCurrentSize int64, addresses ...string) error {
@@ -860,10 +906,16 @@ func (c *Controller) WriteAt(b []byte, off int64) (int, error) {
 	startTime := time.Now()
 	var n int
 	var err error
-	if c.hasWOReplica() {
-		n, err = c.writeInWOMode(b, off)
-	} else {
-		n, err = c.writeInNormalMode(b, off)
+
+	switch c.volumeMode {
+	case types.VolumeModeErasureCoding:
+		n, err = c.erasurecodingBackend.WriteAt(b, off)
+	case types.VolumeModeReplication:
+		if c.hasWOReplica() {
+			n, err = c.writeInWOMode(b, off)
+		} else {
+			n, err = c.writeInNormalMode(b, off)
+		}
 	}
 	c.RUnlock()
 	if err != nil {
@@ -877,7 +929,7 @@ func (c *Controller) writeInWOMode(b []byte, off int64) (int, error) {
 	bufLen := len(b)
 	// buffer b is defaultSectorSize aligned
 	if (bufLen == 0) || ((off%diskutil.VolumeSectorSize == 0) && (bufLen%diskutil.VolumeSectorSize == 0)) {
-		return c.backend.WriteAt(b, off)
+		return c.replicationBackend.WriteAt(b, off)
 	}
 
 	readOffsetStart := (off / diskutil.VolumeSectorSize) * diskutil.VolumeSectorSize
@@ -888,14 +940,14 @@ func (c *Controller) writeInWOMode(b []byte, off int64) (int, error) {
 		readOffsetEnd = (((off + int64(bufLen)) / diskutil.VolumeSectorSize) + 1) * diskutil.VolumeSectorSize
 	}
 	readBuf := make([]byte, readOffsetEnd-readOffsetStart)
-	if _, err := c.backend.ReadAt(readBuf, readOffsetStart); err != nil {
+	if _, err := c.replicationBackend.ReadAt(readBuf, readOffsetStart); err != nil {
 		return 0, errors.Wrap(err, "failed to retrieve aligned sectors from RW replicas")
 	}
 
 	startCut := int(off % diskutil.VolumeSectorSize)
 	copy(readBuf[startCut:startCut+bufLen], b)
 
-	if n, err := c.backend.WriteAt(readBuf, readOffsetStart); err != nil {
+	if n, err := c.replicationBackend.WriteAt(readBuf, readOffsetStart); err != nil {
 		if n < startCut {
 			return 0, err
 		}
@@ -908,20 +960,29 @@ func (c *Controller) writeInWOMode(b []byte, off int64) (int, error) {
 }
 
 func (c *Controller) writeInNormalMode(b []byte, off int64) (int, error) {
-	return c.backend.WriteAt(b, off)
+	return c.replicationBackend.WriteAt(b, off)
 }
 
 func (c *Controller) ReadAt(b []byte, off int64) (int, error) {
-	c.RLock()
+	var n int
+	var err error
+
 	l := len(b)
 	if off < 0 || off+int64(l) > c.size {
 		err := fmt.Errorf("EOF: Read of %v bytes at offset %v is beyond volume size %v", l, off, c.size)
-		c.RUnlock()
 		return 0, err
 	}
 	startTime := time.Now()
-	n, err := c.backend.ReadAt(b, off)
+
+	c.RLock()
+	switch c.volumeMode {
+	case types.VolumeModeErasureCoding:
+		n, err = c.erasurecodingBackend.ReadAt(b, off)
+	case types.VolumeModeReplication:
+		n, err = c.replicationBackend.ReadAt(b, off)
+	}
 	c.RUnlock()
+
 	if err != nil {
 		return n, c.handleError(err)
 	}
@@ -930,6 +991,8 @@ func (c *Controller) ReadAt(b []byte, off int64) (int, error) {
 }
 
 func (c *Controller) UnmapAt(length uint32, off int64) (int, error) {
+	var n int
+	var err error
 	// TODO: Need to fail unmap requests
 	//  if the volume is purging snapshots or creating backups.
 	c.RLock()
@@ -951,7 +1014,12 @@ func (c *Controller) UnmapAt(length uint32, off int64) (int, error) {
 	}
 
 	// startTime := time.Now()
-	n, err := c.backend.UnmapAt(length, off)
+	switch c.volumeMode {
+	case types.VolumeModeErasureCoding:
+		n, err = c.erasurecodingBackend.UnmapAt(length, off)
+	case types.VolumeModeReplication:
+		n, err = c.replicationBackend.UnmapAt(length, off)
+	}
 	c.RUnlock()
 	if err != nil {
 		return n, c.handleError(err)
@@ -1012,7 +1080,7 @@ func (c *Controller) handleError(err error) error {
 
 func (c *Controller) reset() {
 	c.replicas = []types.Replica{}
-	c.backend = &replicator{}
+	c.replicationBackend = &replicator{}
 }
 
 func (c *Controller) Close() error {
@@ -1041,7 +1109,7 @@ func (c *Controller) shutdownBackend() error {
 	c.Lock()
 	defer c.Unlock()
 
-	err := c.backend.Close()
+	err := c.replicationBackend.Close()
 	c.reset()
 
 	return err
