@@ -31,11 +31,6 @@ func NewErasureCoder(n, k int, size uint64, backends []types.Backend) (*erasurec
 		return nil, err
 	}
 
-	// availableBackends := make([]ecbackend, len(backends))
-	// for i := range availableBackends {
-	// 	availableBackends[i] = ecbackend{0, true, backends[i]}
-	// }
-
 	return &erasurecoder{size, backends, cod}, nil
 }
 
@@ -78,19 +73,6 @@ func (e *erasurecoder) denseReadAt(buf []byte, off int64) (int, error) {
 
 	sliceIdx := 0
 	for i := 0; i < len(e.backends); i++ {
-		// if e.backends[i].generation < e.generation {
-		// 	blk := make([]byte, 4096)
-		// 	e.backends[i].ReadAt(blk, 0)
-		// 	if e.backends[i].responsive {
-		// 		logrus.Infof("Need rebuild")
-		// 		e.needrebuild = true
-		// 		e.rebuild()
-		// 	} else {
-		// 		logrus.Infof("Backend %d is outdated, ignoring", i)
-		// 		continue // avoid reading stale data
-		// 	}
-		// }
-
 		dat := make([]byte, sliceLen)
 		_, err = e.backends[i].ReadAt(dat, sliceOff)
 		if err != nil {

@@ -70,6 +70,7 @@ func NewReedSolomonCode(n, k int) (ReedSolomonCode, error) {
 }
 
 func (c *ReedSolomonCode) GetN() int { return c.n }
+func (c *ReedSolomonCode) GetK() int { return c.k }
 
 // Encode an aligned byte arrary into a list of slices with data and parity
 // bytes.
