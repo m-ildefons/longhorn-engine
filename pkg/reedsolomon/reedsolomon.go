@@ -11,12 +11,12 @@ import (
  * This package implements Reed-Solomon coding. More specifically, it implemets
  * RS coding suitable for use in Longhorn.
  *
- * A ReedSolomonCode is an object containing all necessary information to
- * encode/decode a byte array to a list of ReedSolomonSlices. A ReedSolomonSlice
+ * A Code is an object containing all necessary information to
+ * encode/decode a byte array to a list of Slices. A Slice
  * is a collection of bytes all with the same code index.
  * When encoding n bytes, the result is n+k bytes (polys), each one carrying an
  * index 0..n+k. When encoding i*n bytes, there will be i bytes for each index.
- * A ReedSolomonSlice will contain all bytes with the same index.
+ * A Slice will contain all bytes with the same index.
  *
  * E.g. for an 3+2 RS code, the bytes 'hello world' will be divided as such:
  *
@@ -39,9 +39,9 @@ import (
  */
 
 const (
-	// sufficient for n+k < 256
+	// M sufficient for n+k < 256
 	M = poly(8)
-	// generating polynom: x^8+x^6+x^5+x^2+1
+	// P generating polynom: x^8+x^6+x^5+x^2+1
 	// TODO: proof that this is actually a generating polynom
 	P = poly(357)
 )
@@ -52,37 +52,37 @@ var (
 	ErrSliceMismatch = errors.New("slice mismatch")
 )
 
-type ReedSolomonCode struct {
+type Code struct {
 	field GaloisField
 	n, k  int
 	mtx   [][]poly
 }
 
-func NewReedSolomonCode(n, k int) (ReedSolomonCode, error) {
+func NewCode(n, k int) (Code, error) {
 	f := GaloisField{M, P}
 	logrus.Infof("Using Galois field GF(2^%d) and generating polynom %#b", f.m, f.p)
-	mat, err := f.mtx_xform_vandermonde(n, k)
+	mat, err := f.xformVandermondeMtx(n, k)
 	if err != nil {
-		return ReedSolomonCode{}, err
+		return Code{}, err
 	}
 	logrus.Infof("Created %d + %d Reed-Solomon code", n, k)
-	return ReedSolomonCode{f, n, k, mat}, nil
+	return Code{f, n, k, mat}, nil
 }
 
-func (c *ReedSolomonCode) GetN() int { return c.n }
+func (c *Code) GetN() int { return c.n }
 
-// Encode an aligned byte arrary into a list of slices with data and parity
-// bytes.
+// EncodeAligned ncodes an aligned byte arrary into a list of slices with data
+// and parity bytes.
 // Aligned in this context means that the number of bytes is divisible by the
 // number of data-slices of the Reed-Solomon code.
-func (c *ReedSolomonCode) EncodeAligned(buf []byte) ([]ReedSolomonSlice, error) {
+func (c *Code) EncodeAligned(buf []byte) ([]Slice, error) {
 	if len(buf)%c.n != 0 {
-		return []ReedSolomonSlice{}, ErrMisaligned
+		return []Slice{}, ErrMisaligned
 	}
-	slices := make([]ReedSolomonSlice, c.n+c.k)
+	slices := make([]Slice, c.n+c.k)
 	for i := range slices {
 		data := make([]byte, len(buf)/c.n)
-		slices[i] = ReedSolomonSlice{i, len(buf) / c.n, data}
+		slices[i] = Slice{i, len(buf) / c.n, data}
 	}
 
 	vec := make([]poly, c.n)
@@ -91,9 +91,9 @@ func (c *ReedSolomonCode) EncodeAligned(buf []byte) ([]ReedSolomonSlice, error) 
 			vec[j] = poly(buf[i*c.n+j])
 		}
 
-		cod, err := c.field.mtx_vec_dot(c.mtx, vec)
+		cod, err := c.field.dotMtxVec(c.mtx, vec)
 		if err != nil {
-			return []ReedSolomonSlice{}, err
+			return []Slice{}, err
 		}
 
 		for j := 0; j < c.n+c.k; j++ {
@@ -104,11 +104,11 @@ func (c *ReedSolomonCode) EncodeAligned(buf []byte) ([]ReedSolomonSlice, error) 
 	return slices, nil
 }
 
-// Decode a list of slices into an aligned byte array.
+// DecodeAligned decodes a list of slices into an aligned byte array.
 // Aligned in this context means that the byte array may be padded with zero
 // bytes until it's length is divisible by the number of data-slices of the
 // Reed-Solomon code.
-func (c *ReedSolomonCode) DecodeAligned(slices []ReedSolomonSlice) ([]byte, error) {
+func (c *Code) DecodeAligned(slices []Slice) ([]byte, error) {
 	if len(slices) < c.n {
 		return []byte{}, ErrTooFewSlices
 	}
@@ -124,7 +124,7 @@ func (c *ReedSolomonCode) DecodeAligned(slices []ReedSolomonSlice) ([]byte, erro
 		for j := 0; j < c.n; j++ {
 			vec[j] = poly(slices[j].Data[i])
 		}
-		dat, err := c.field.mtx_vec_dot(mtx, vec)
+		dat, err := c.field.dotMtxVec(mtx, vec)
 		if err != nil {
 			return []byte{}, err
 		}
@@ -136,29 +136,29 @@ func (c *ReedSolomonCode) DecodeAligned(slices []ReedSolomonSlice) ([]byte, erro
 }
 
 // Rebuild the n+k slices from a list of n slices
-func (c *ReedSolomonCode) Rebuild(slices []ReedSolomonSlice) ([]ReedSolomonSlice, error) {
+func (c *Code) Rebuild(slices []Slice) ([]Slice, error) {
 	if len(slices) < c.n {
-		return []ReedSolomonSlice{}, ErrTooFewSlices
+		return []Slice{}, ErrTooFewSlices
 	}
 
 	mtx, err := c.buildMatrix(slices)
 	if err != nil {
-		return []ReedSolomonSlice{}, err
+		return []Slice{}, err
 	}
 
 	length := slices[0].Length
 
-	result := make([]ReedSolomonSlice, c.n+c.k)
+	result := make([]Slice, c.n+c.k)
 	for i := range result {
 		if i == slices[i].Index {
 			if slices[i].Length != length {
-				return []ReedSolomonSlice{}, ErrSliceMismatch
+				return []Slice{}, ErrSliceMismatch
 			}
-			slice := ReedSolomonSlice{i, length, slices[i].Data}
+			slice := Slice{i, length, slices[i].Data}
 			result[i] = slice
 		} else {
 			dat := make([]byte, length)
-			slice := ReedSolomonSlice{i, length, dat}
+			slice := Slice{i, length, dat}
 			result[i] = slice
 		}
 	}
@@ -168,13 +168,13 @@ func (c *ReedSolomonCode) Rebuild(slices []ReedSolomonSlice) ([]ReedSolomonSlice
 		for j := 0; j < c.n; j++ {
 			vec[j] = poly(slices[j].Data[i])
 		}
-		dat, err := c.field.mtx_vec_dot(mtx, vec)
+		dat, err := c.field.dotMtxVec(mtx, vec)
 		if err != nil {
-			return []ReedSolomonSlice{}, err
+			return []Slice{}, err
 		}
-		cod, err := c.field.mtx_vec_dot(c.mtx, dat)
+		cod, err := c.field.dotMtxVec(c.mtx, dat)
 		if err != nil {
-			return []ReedSolomonSlice{}, err
+			return []Slice{}, err
 		}
 		for j := range result {
 			// re-assign regenerated byte
@@ -187,11 +187,7 @@ func (c *ReedSolomonCode) Rebuild(slices []ReedSolomonSlice) ([]ReedSolomonSlice
 	return result, nil
 }
 
-func (c *ReedSolomonCode) BuildMatrix(slices []ReedSolomonSlice) ([][]poly, error) {
-	return c.buildMatrix(slices)
-}
-
-func (c *ReedSolomonCode) buildMatrix(slices []ReedSolomonSlice) ([][]poly, error) {
+func (c *Code) buildMatrix(slices []Slice) ([][]poly, error) {
 	if len(slices) < c.n {
 		return [][]poly{}, ErrTooFewSlices
 	}
@@ -209,14 +205,14 @@ func (c *ReedSolomonCode) buildMatrix(slices []ReedSolomonSlice) ([][]poly, erro
 		}
 	}
 
-	mtx, err := c.field.mtx_inv(mtx)
+	mtx, err := c.field.invertMtx(mtx)
 	if err != nil {
 		return [][]poly{}, err
 	}
 	return mtx, nil
 }
 
-type ReedSolomonSlice struct {
+type Slice struct {
 	Index  int
 	Length int
 	Data   []byte

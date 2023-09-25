@@ -15,7 +15,10 @@ var (
 // hold 2^m+1 values
 type poly uint64
 
-// a good choice for erasure coding would be e.g. GF(2^8), i.e. m=8
+// GaloisField keeps the most important characteristics of a Galois field,
+// namely the exponent to calculate the number of elements and the generating
+// polynom.
+// A good choice for erasure coding would be e.g. GF(2^8), i.e. m=8
 // with generating polynom 357 (x^8+x^6+x^5+x^2+1). This allows for encoding
 // byte-aligned messages easily as each member of the field fits exactly in one
 // byte.
@@ -97,7 +100,7 @@ func (g *GaloisField) pow(b, e poly) poly {
 }
 
 // v * v
-func (g *GaloisField) vec_vec_dot(v1, v2 []poly) (poly, error) {
+func (g *GaloisField) dotVecVec(v1, v2 []poly) (poly, error) {
 	if len(v1) != len(v2) {
 		return poly(0), ErrDimensionMismatch
 	}
@@ -110,10 +113,10 @@ func (g *GaloisField) vec_vec_dot(v1, v2 []poly) (poly, error) {
 }
 
 // A * v
-func (g *GaloisField) mtx_vec_dot(A [][]poly, v []poly) ([]poly, error) {
+func (g *GaloisField) dotMtxVec(A [][]poly, v []poly) ([]poly, error) {
 	res := make([]poly, len(A))
 	for i := range res {
-		d, err := g.vec_vec_dot(A[i], v)
+		d, err := g.dotVecVec(A[i], v)
 		if err != nil {
 			return []poly{}, err
 		}
@@ -123,7 +126,7 @@ func (g *GaloisField) mtx_vec_dot(A [][]poly, v []poly) ([]poly, error) {
 }
 
 // generate an identity matrix of dimension n by n
-func (g *GaloisField) mtx_identity(n int) ([][]poly, error) {
+func (g *GaloisField) identityMtx(n int) ([][]poly, error) {
 	if n <= 0 {
 		return [][]poly{}, ErrDimensionMismatch
 	}
@@ -138,7 +141,7 @@ func (g *GaloisField) mtx_identity(n int) ([][]poly, error) {
 }
 
 // generate a vandermonde matrix of n+k rows by n columns
-func (g *GaloisField) mtx_vandermonde(n, k int) ([][]poly, error) {
+func (g *GaloisField) vandermondeMtx(n, k int) ([][]poly, error) {
 	if uint64(n+k) > g.size() {
 		return [][]poly{}, ErrInsufficientFieldSize
 	}
@@ -154,8 +157,8 @@ func (g *GaloisField) mtx_vandermonde(n, k int) ([][]poly, error) {
 
 // generate a modified vandermonde matrix, where the top rows form an indentity
 // matrix, using linear transformations
-func (g *GaloisField) mtx_xform_vandermonde(n, k int) ([][]poly, error) {
-	mtx, err := g.mtx_vandermonde(n, k)
+func (g *GaloisField) xformVandermondeMtx(n, k int) ([][]poly, error) {
+	mtx, err := g.vandermondeMtx(n, k)
 	if err != nil {
 		return mtx, err
 	}
@@ -190,13 +193,13 @@ func (g *GaloisField) mtx_xform_vandermonde(n, k int) ([][]poly, error) {
 }
 
 // invert matrix A, if possible
-func (g *GaloisField) mtx_inv(A [][]poly) ([][]poly, error) {
+func (g *GaloisField) invertMtx(A [][]poly) ([][]poly, error) {
 	n := len(A)
 	if n != len(A[0]) {
 		return [][]poly{}, ErrNoninvertibleMatrix
 	}
 
-	I, err := g.mtx_identity(n)
+	I, err := g.identityMtx(n)
 	if err != nil {
 		return [][]poly{}, err
 	}

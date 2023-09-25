@@ -19,14 +19,14 @@ var (
 	ErrRebuildInProgress = errors.New("Rebuild in progress")
 )
 
-type erasurecoder struct {
+type ErasureCoder struct {
 	size     uint64
 	backends []types.Backend
-	code     reedsolomon.ReedSolomonCode
+	code     reedsolomon.Code
 }
 
-func NewErasureCoder(n, k int, size uint64, backends []types.Backend) (*erasurecoder, error) {
-	cod, err := reedsolomon.NewReedSolomonCode(n, k)
+func NewErasureCoder(n, k int, size uint64, backends []types.Backend) (*ErasureCoder, error) {
+	cod, err := reedsolomon.NewCode(n, k)
 	if err != nil {
 		return nil, err
 	}
@@ -36,11 +36,11 @@ func NewErasureCoder(n, k int, size uint64, backends []types.Backend) (*erasurec
 	// 	availableBackends[i] = ecbackend{0, true, backends[i]}
 	// }
 
-	return &erasurecoder{size, backends, cod}, nil
+	return &ErasureCoder{size, backends, cod}, nil
 }
 
-func (e *erasurecoder) ReadAt(buf []byte, off int64) (int, error) {
-	logrus.Infof("Read of length %d at %d", len(buf), off)
+func (e *ErasureCoder) ReadAt(buf []byte, off int64) (int, error) {
+	// logrus.Infof("Read of length %d at %d", len(buf), off)
 	num, err := e.denseReadAt(buf, off)
 	if err != nil {
 		return 0, err
@@ -48,8 +48,8 @@ func (e *erasurecoder) ReadAt(buf []byte, off int64) (int, error) {
 	return num, nil
 }
 
-func (e *erasurecoder) WriteAt(buf []byte, off int64) (int, error) {
-	logrus.Infof("Write of length %d at %d", len(buf), off)
+func (e *ErasureCoder) WriteAt(buf []byte, off int64) (int, error) {
+	// logrus.Infof("Write of length %d at %d", len(buf), off)
 	num, err := e.denseWriteAt(buf, off)
 	if err != nil {
 		return 0, err
@@ -57,11 +57,27 @@ func (e *erasurecoder) WriteAt(buf []byte, off int64) (int, error) {
 	return num, nil
 }
 
-func (e *erasurecoder) UnmapAt(length uint32, off int64) (int, error) {
+func (e *ErasureCoder) UnmapAt(length uint32, off int64) (int, error) {
 	return 0, ErrNotImplemented
 }
 
-func (e *erasurecoder) denseReadAt(buf []byte, off int64) (int, error) {
+func aread(length, offset int64, idx int, backend types.Backend, c chan reedsolomon.Slice, e chan error) {
+	buf := make([]byte, length)
+	_, err := backend.ReadAt(buf, offset)
+	if err != nil {
+		logrus.Errorf("Error: %v", err)
+		e <- err
+		return
+	}
+	slice := reedsolomon.Slice{
+		Index:  idx,
+		Length: int(length),
+		Data:   buf,
+	}
+	c <- slice
+}
+
+func (e *ErasureCoder) denseReadAt(buf []byte, off int64) (int, error) {
 	var err error
 
 	n := int64(e.code.GetN())
@@ -74,9 +90,10 @@ func (e *erasurecoder) denseReadAt(buf []byte, off int64) (int, error) {
 
 	sliceOff := start / n
 	sliceLen := length / n
-	slices := make([]reedsolomon.ReedSolomonSlice, n)
+	slices := make([]reedsolomon.Slice, n)
 
-	sliceIdx := 0
+	ec := make(chan error, 0)
+	ch := make(chan reedsolomon.Slice, len(e.backends))
 	for i := 0; i < len(e.backends); i++ {
 		// if e.backends[i].generation < e.generation {
 		// 	blk := make([]byte, 4096)
@@ -91,15 +108,26 @@ func (e *erasurecoder) denseReadAt(buf []byte, off int64) (int, error) {
 		// 	}
 		// }
 
-		dat := make([]byte, sliceLen)
-		_, err = e.backends[i].ReadAt(dat, sliceOff)
-		if err != nil {
-			logrus.Infof("Read-error from backend %d: %s", i, err)
+		// dat := make([]byte, sliceLen)
+		// _, err = e.backends[i].ReadAt(dat, sliceOff)
+		// if err != nil {
+		// 	logrus.Infof("Read-error from backend %d: %s", i, err)
+		// 	continue
+		// }
+		go aread(sliceLen, sliceOff, i, e.backends[i], ch, ec)
+	}
+
+	sliceIdx := 0
+	for i := 0; i < len(e.backends); i++ {
+		select {
+		case dat := <-ch:
+			slices[sliceIdx] = dat
+			sliceIdx++
+		case err := <-ec:
+			logrus.Errorf("%v", err)
 			continue
 		}
-		slices[sliceIdx] = reedsolomon.ReedSolomonSlice{Index: i, Length: int(sliceLen), Data: dat}
 
-		sliceIdx++
 		if int64(sliceIdx) == n {
 			break
 		}
@@ -109,20 +137,30 @@ func (e *erasurecoder) denseReadAt(buf []byte, off int64) (int, error) {
 		return 0, ErrTooFewSlices
 	}
 
-	aligned_buffer, err := e.code.DecodeAligned(slices)
+	alignedBuffer, err := e.code.DecodeAligned(slices)
 	if err != nil {
 		return 0, err
 	}
 
 	for i := 0; i < int(l); i++ {
-		buf[i] = aligned_buffer[int(prePadLen)+i]
+		buf[i] = alignedBuffer[int(prePadLen)+i]
 	}
 	// logrus.Infof("Aligend Read of length %d at %d", length, start)
 	// logrus.Infof("Slice Read of length %d at %d", sliceLen, sliceOff)
 	return len(buf), nil
 }
 
-func (e *erasurecoder) denseWriteAt(buf []byte, off int64) (int, error) {
+func awrite(buffer []byte, offset int64, backend types.Backend, c chan int, e chan error) {
+	length, err := backend.WriteAt(buffer, offset)
+	if err != nil {
+		logrus.Errorf("Error: %v", err)
+		e <- err
+		return
+	}
+	c <- length
+}
+
+func (e *ErasureCoder) denseWriteAt(buf []byte, off int64) (int, error) {
 	var err error
 	n := int64(e.code.GetN())
 	l := int64(len(buf))
@@ -143,25 +181,36 @@ func (e *erasurecoder) denseWriteAt(buf []byte, off int64) (int, error) {
 
 	prePadLen := off % n
 	postPadLen := length - prePadLen - l
-	aligned_buffer := make([]byte, length)
+	alignedBuffer := make([]byte, length)
 	for i := int64(0); i < prePadLen; i++ {
-		aligned_buffer[i] = prePadLine[i]
+		alignedBuffer[i] = prePadLine[i]
 	}
 	for i := int64(0); i < l; i++ {
-		aligned_buffer[prePadLen+i] = buf[i]
+		alignedBuffer[prePadLen+i] = buf[i]
 	}
 	for i := postPadLen; i > 0; i-- {
-		aligned_buffer[length-i] = postPadLine[n-i]
+		alignedBuffer[length-i] = postPadLine[n-i]
 	}
 
-	slices, err := e.code.EncodeAligned(aligned_buffer)
+	slices, err := e.code.EncodeAligned(alignedBuffer)
 	if err != nil {
 		return 0, err
 	}
 
+	ec := make(chan error, 0)
+	ch := make(chan int, len(e.backends))
 	sliceOff := start / n
 	for i := range e.backends {
-		e.backends[i].WriteAt(slices[i].Data, sliceOff)
+		//e.backends[i].WriteAt(slices[i].Data, sliceOff)
+		go awrite(slices[i].Data, sliceOff, e.backends[i], ch, ec)
+	}
+
+	for i := range e.backends {
+		select {
+		case <-ch:
+		case err := <-ec:
+			logrus.Errorf("Failed writing to backend %d: %v", i, err)
+		}
 	}
 
 	// sliceLen := length / n
@@ -170,7 +219,7 @@ func (e *erasurecoder) denseWriteAt(buf []byte, off int64) (int, error) {
 	return 0, nil
 }
 
-func (e *erasurecoder) blockReadAt(buf []byte, off int64) (int, error) {
+func (e *ErasureCoder) blockReadAt(buf []byte, off int64) (int, error) {
 	nblk := int64(len(buf) / ECBlockSize)
 	oblk := off / ECBlockSize
 	//logrus.Infof("Read of %d blocks starting at block No. %d", nblk, oblk)
@@ -187,15 +236,15 @@ func (e *erasurecoder) blockReadAt(buf []byte, off int64) (int, error) {
 		"Actual read of %d blocks starting at %d until %d, "+
 		"with head and tail of %d and %d", nblk, oblk, rblk, sblk, eblk, hblk, tblk)
 
-	slice_block_region := rblk / n
-	slice_block_offset := sblk / n
-	logrus.Infof("reading %d blocks of each slice starting %d", slice_block_region, slice_block_offset)
+	sliceBlockRegion := rblk / n
+	sliceBlockOffset := sblk / n
+	logrus.Infof("reading %d blocks of each slice starting %d", sliceBlockRegion, sliceBlockOffset)
 
 	num, err := e.denseReadAt(buf, off)
 	return num, err
 }
 
-func (e *erasurecoder) blockWriteAt(buf []byte, off int64) (int, error) {
+func (e *ErasureCoder) blockWriteAt(buf []byte, off int64) (int, error) {
 	nblk := len(buf) / ECBlockSize
 	oblk := off / ECBlockSize
 	logrus.Infof("Write of %d blocks starting at block No. %d", nblk, oblk)

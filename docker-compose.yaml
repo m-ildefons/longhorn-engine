@@ -2,7 +2,7 @@
 services:
   controller:
     privileged: true
-    image: longhornio/longhorn-engine:f288e3b0-dirty
+    image: longhorn-engine:erasure-coding
     command: [
       "longhorn",
       "controller",
@@ -36,7 +36,7 @@ services:
       - replica-5
 
   replica-1:
-    image: longhornio/longhorn-engine:f288e3b0-dirty
+    image: longhorn-engine:erasure-coding
     command: [
       "longhorn",
       "replica",
@@ -51,7 +51,7 @@ services:
       - /tmp/lh-test/replica-1:/volume
 
   replica-2:
-    image: longhornio/longhorn-engine:f288e3b0-dirty
+    image: longhorn-engine:erasure-coding
     command: [
       "longhorn",
       "replica",
@@ -66,7 +66,7 @@ services:
       - /tmp/lh-test/replica-2:/volume
 
   replica-3:
-    image: longhornio/longhorn-engine:f288e3b0-dirty
+    image: longhorn-engine:erasure-coding
     command: [
       "longhorn",
       "replica",
@@ -81,7 +81,7 @@ services:
       - /tmp/lh-test/replica-3:/volume
 
   replica-4:
-    image: longhornio/longhorn-engine:f288e3b0-dirty
+    image: longhorn-engine:erasure-coding
     command: [
       "longhorn",
       "replica",
@@ -96,7 +96,7 @@ services:
       - /tmp/lh-test/replica-4:/volume
 
   replica-5:
-    image: longhornio/longhorn-engine:f288e3b0-dirty
+    image: longhorn-engine:erasure-coding
     command: [
       "longhorn",
       "replica",

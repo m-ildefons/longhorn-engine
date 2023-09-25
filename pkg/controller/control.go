@@ -29,7 +29,7 @@ type Controller struct {
 	replicas                  []types.Replica
 	factory                   types.BackendFactory
 	replicationBackend        *replicator
-	erasurecodingBackend      *erasurecoder
+	erasurecodingBackend      *ErasureCoder
 	volumeMode                types.VolumeMode
 	frontend                  types.Frontend
 	isUpgrade                 bool
